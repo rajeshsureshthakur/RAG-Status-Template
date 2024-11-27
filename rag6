@@ -1,0 +1,348 @@
+import java.io.*;
+import java.time.*;
+import java.time.format.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+public class ProjectRAGCalculator {
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+    private static final LocalDate TODAY = LocalDate.of(2024, 11, 27); // Today's date: 27/11/2024
+    
+    public static void main(String[] args) {
+        try {
+            String projectDataFile = "project_data.csv";
+            String phaseStatusFile = "phase_status.csv";
+            String defectDataFile = "defect_data.csv";
+            
+            ProjectData projectData = readProjectData(projectDataFile);
+            List<PhaseStatus> phases = readPhaseStatus(phaseStatusFile);
+            List<Defect> defects = readDefectData(defectDataFile);
+            
+            RAGCalculator calculator = new RAGCalculator();
+            RAGStatus status = calculator.calculateOverallRAG(projectData, phases, defects);
+            
+            writeRAGReport(status, "rag_report.csv");
+            System.out.println("RAG report generated successfully!");
+            System.out.println("Today's Date: " + TODAY.format(DATE_FORMAT));
+            
+        } catch (Exception e) {
+            System.err.println("Error in RAG calculation: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static ProjectData readProjectData(String filename) throws IOException {
+        ProjectData projectData = null;
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            br.readLine(); // Skip header
+            String line = br.readLine();
+            if (line != null) {
+                String[] values = line.split(",");
+                projectData = new ProjectData(
+                    values[0],                                    // project_id
+                    values[1],                                    // project_name
+                    LocalDate.parse(values[2].trim(), DATE_FORMAT),   // start_date
+                    LocalDate.parse(values[3].trim(), DATE_FORMAT)    // end_date
+                );
+            }
+        }
+        return projectData;
+    }
+
+    private static List<PhaseStatus> readPhaseStatus(String filename) throws IOException {
+        List<PhaseStatus> phases = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            br.readLine(); // Skip header
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                PhaseStatus phase = new PhaseStatus(
+                    values[0],                                    // phase_name
+                    LocalDate.parse(values[1].trim(), DATE_FORMAT),   // start_date
+                    LocalDate.parse(values[2].trim(), DATE_FORMAT),   // end_date
+                    Status.valueOf(values[3].toUpperCase().trim())    // current_status
+                );
+                phases.add(phase);
+            }
+        }
+        return phases;
+    }
+
+    private static List<Defect> readDefectData(String filename) throws IOException {
+        List<Defect> defects = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            br.readLine(); // Skip header
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                Defect defect = new Defect(
+                    values[0],                                    // defect_id
+                    DefectSeverity.valueOf(values[1].toUpperCase().trim()),  // severity
+                    LocalDate.parse(values[2].trim(), DATE_FORMAT),   // open_date
+                    LocalDate.parse(values[3].trim(), DATE_FORMAT)    // fix_eta
+                );
+                defects.add(defect);
+            }
+        }
+        return defects;
+    }
+
+    private static void writeRAGReport(RAGStatus status, String outputFile) throws IOException {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(outputFile))) {
+            bw.write("Component,Score,Status,Details\n");
+            bw.write(String.format("Schedule Health,%.2f,%s,%s\n", 
+                status.scheduleHealth, status.getScheduleRAG(), status.scheduleDetails));
+            bw.write(String.format("Phase Health,%.2f,%s,%s\n",
+                status.phaseHealth, status.getPhaseRAG(), status.phaseDetails));
+            bw.write(String.format("Defect Health,%.2f,%s,%s\n", 
+                status.defectHealth, status.getDefectRAG(), status.defectDetails));
+            bw.write(String.format("Overall Status,%.2f,%s,%s\n", 
+                status.overallHealth, status.getOverallRAG(), status.overallDetails));
+        }
+    }
+}
+
+class RAGCalculator {
+    public RAGStatus calculateOverallRAG(ProjectData project, List<PhaseStatus> phases, List<Defect> defects) {
+        RAGStatus status = new RAGStatus();
+        
+        // Calculate schedule health
+        double scheduleHealth = calculateScheduleHealth(project);
+        status.scheduleHealth = scheduleHealth;
+        status.scheduleDetails = generateScheduleDetails(project);
+        
+        // Calculate phase health
+        double phaseHealth = calculatePhaseHealth(phases);
+        status.phaseHealth = phaseHealth;
+        status.phaseDetails = generatePhaseDetails(phases);
+        
+        // Calculate defect health
+        double defectHealth = calculateDefectHealth(defects);
+        status.defectHealth = defectHealth;
+        status.defectDetails = generateDefectDetails(defects);
+        
+        // Calculate overall health (weighted average)
+        status.overallHealth = (scheduleHealth * 0.3) + (phaseHealth * 0.4) + (defectHealth * 0.3);
+        status.overallDetails = generateOverallDetails(status);
+        
+        return status;
+    }
+    
+    private double calculateScheduleHealth(ProjectData project) {
+        double health = 1.0;
+        
+        long totalDays = ChronoUnit.DAYS.between(project.startDate, project.endDate);
+        long daysElapsed = ChronoUnit.DAYS.between(project.startDate, ProjectRAGCalculator.TODAY);
+        
+        double progress = (double) daysElapsed / totalDays;
+        
+        if (progress > 1.0) {
+            health -= 0.4; // Severely behind schedule
+        } else if (progress > 0.9) {
+            health -= 0.2; // Slightly behind schedule
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private double calculatePhaseHealth(List<PhaseStatus> phases) {
+        double health = 1.0;
+        int delayedPhases = 0;
+        int blockedPhases = 0;
+        
+        for (PhaseStatus phase : phases) {
+            if (phase.status == Status.BLOCKED) {
+                blockedPhases++;
+                health -= 0.2;
+            }
+            
+            if (ProjectRAGCalculator.TODAY.isAfter(phase.endDate) && phase.status != Status.COMPLETED) {
+                delayedPhases++;
+                health -= 0.15;
+            }
+            
+            if (ProjectRAGCalculator.TODAY.isAfter(phase.startDate) && 
+                ProjectRAGCalculator.TODAY.isBefore(phase.endDate) && 
+                phase.status == Status.NOT_STARTED) {
+                health -= 0.2;
+            }
+        }
+        
+        if (delayedPhases > 1) health -= 0.1;
+        if (blockedPhases > 1) health -= 0.1;
+        
+        return Math.max(0, health);
+    }
+    
+    private double calculateDefectHealth(List<Defect> defects) {
+        double health = 1.0;
+        
+        long criticalDefects = 0;
+        long highDefects = 0;
+        long delayedDefects = 0;
+        
+        for (Defect defect : defects) {
+            if (defect.severity == DefectSeverity.CRITICAL) {
+                criticalDefects++;
+                if (ProjectRAGCalculator.TODAY.isAfter(defect.fixETA)) {
+                    delayedDefects++;
+                }
+            } else if (defect.severity == DefectSeverity.HIGH) {
+                highDefects++;
+                if (ProjectRAGCalculator.TODAY.isAfter(defect.fixETA)) {
+                    delayedDefects++;
+                }
+            }
+        }
+        
+        if (criticalDefects > 0) {
+            health -= 0.3;
+        }
+        
+        if (highDefects > 2) {
+            health -= 0.2;
+        }
+        
+        if (delayedDefects > 0) {
+            health -= 0.1 * delayedDefects;
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private String generateScheduleDetails(ProjectData project) {
+        long totalDays = ChronoUnit.DAYS.between(project.startDate, project.endDate);
+        long daysElapsed = ChronoUnit.DAYS.between(project.startDate, ProjectRAGCalculator.TODAY);
+        double progress = ((double) daysElapsed / totalDays) * 100;
+        
+        return String.format("Progress: %.1f%%, Days Elapsed: %d, Total Days: %d", 
+            progress, daysElapsed, totalDays);
+    }
+    
+    private String generatePhaseDetails(List<PhaseStatus> phases) {
+        int completedPhases = 0;
+        int totalPhases = phases.size();
+        int delayedPhases = 0;
+        int blockedPhases = 0;
+        
+        for (PhaseStatus phase : phases) {
+            if (phase.status == Status.COMPLETED) {
+                completedPhases++;
+            }
+            if (phase.status == Status.BLOCKED) {
+                blockedPhases++;
+            }
+            if (ProjectRAGCalculator.TODAY.isAfter(phase.endDate) && phase.status != Status.COMPLETED) {
+                delayedPhases++;
+            }
+        }
+        
+        return String.format("Completed: %d/%d, Delayed: %d, Blocked: %d", 
+            completedPhases, totalPhases, delayedPhases, blockedPhases);
+    }
+    
+    private String generateDefectDetails(List<Defect> defects) {
+        long criticalDefects = defects.stream()
+            .filter(d -> d.severity == DefectSeverity.CRITICAL)
+            .count();
+            
+        long highDefects = defects.stream()
+            .filter(d -> d.severity == DefectSeverity.HIGH)
+            .count();
+            
+        long delayedDefects = defects.stream()
+            .filter(d -> ProjectRAGCalculator.TODAY.isAfter(d.fixETA))
+            .count();
+            
+        return String.format("Critical: %d, High: %d, Delayed: %d", 
+            criticalDefects, highDefects, delayedDefects);
+    }
+    
+    private String generateOverallDetails(RAGStatus status) {
+        return String.format("Schedule: %s, Phase: %s, Defect: %s", 
+            status.getScheduleRAG(), status.getPhaseRAG(), status.getDefectRAG());
+    }
+}
+
+class ProjectData {
+    String projectId;
+    String projectName;
+    LocalDate startDate;
+    LocalDate endDate;
+    
+    public ProjectData(String projectId, String projectName, LocalDate startDate, LocalDate endDate) {
+        this.projectId = projectId;
+        this.projectName = projectName;
+        this.startDate = startDate;
+        this.endDate = endDate;
+    }
+}
+
+class PhaseStatus {
+    String phaseName;
+    LocalDate startDate;
+    LocalDate endDate;
+    Status status;
+    
+    public PhaseStatus(String phaseName, LocalDate startDate, LocalDate endDate, Status status) {
+        this.phaseName = phaseName;
+        this.startDate = startDate;
+        this.endDate = endDate;
+        this.status = status;
+    }
+}
+
+class Defect {
+    String defectId;
+    DefectSeverity severity;
+    LocalDate openDate;
+    LocalDate fixETA;
+    
+    public Defect(String defectId, DefectSeverity severity, LocalDate openDate, LocalDate fixETA) {
+        this.defectId = defectId;
+        this.severity = severity;
+        this.openDate = openDate;
+        this.fixETA = fixETA;
+    }
+}
+
+class RAGStatus {
+    double scheduleHealth;
+    double phaseHealth;
+    double defectHealth;
+    double overallHealth;
+    String scheduleDetails;
+    String phaseDetails;
+    String defectDetails;
+    String overallDetails;
+    
+    public String getScheduleRAG() {
+        return getRAGColor(scheduleHealth);
+    }
+    
+    public String getPhaseRAG() {
+        return getRAGColor(phaseHealth);
+    }
+    
+    public String getDefectRAG() {
+        return getRAGColor(defectHealth);
+    }
+    
+    public String getOverallRAG() {
+        return getRAGColor(overallHealth);
+    }
+    
+    private String getRAGColor(double health) {
+        if (health >= 0.8) return "GREEN";
+        if (health >= 0.6) return "AMBER";
+        return "RED";
+    }
+}
+
+enum Status {
+    NOT_STARTED, IN_PROGRESS, COMPLETED, BLOCKED
+}
+
+enum DefectSeverity {
+    CRITICAL, HIGH, MEDIUM, LOW
+}
