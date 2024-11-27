@@ -1,0 +1,259 @@
+import java.io.*;
+import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+public class ProjectRAGCalculator {
+    public static void main(String[] args) {
+        try {
+            String projectDataFile = "project_data.csv";
+            String defectDataFile = "defect_data.csv";
+            
+            ProjectData projectData = readProjectData(projectDataFile);
+            List<Defect> defects = readDefectData(defectDataFile);
+            
+            RAGCalculator calculator = new RAGCalculator();
+            RAGStatus status = calculator.calculateOverallRAG(projectData, defects);
+            
+            writeRAGReport(status, "rag_report.csv");
+            
+        } catch (Exception e) {
+            System.err.println("Error in RAG calculation: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static ProjectData readProjectData(String filename) throws IOException {
+        ProjectData projectData = null;
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            // Skip header
+            br.readLine();
+            
+            String line = br.readLine();
+            if (line != null) {
+                String[] values = line.split(",");
+                projectData = new ProjectData(
+                    values[0],                    // project_id
+                    values[1],                    // project_name
+                    LocalDate.parse(values[2]),   // start_date
+                    LocalDate.parse(values[3])    // end_date
+                );
+            }
+        }
+        return projectData;
+    }
+
+    private static List<Defect> readDefectData(String filename) throws IOException {
+        List<Defect> defects = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            // Skip header
+            br.readLine();
+            
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                Defect defect = new Defect(
+                    values[0],                    // defect_id
+                    DefectSeverity.valueOf(values[1].toUpperCase()),  // severity
+                    LocalDate.parse(values[2]),   // open_date
+                    LocalDate.parse(values[3])    // fix_eta
+                );
+                defects.add(defect);
+            }
+        }
+        return defects;
+    }
+
+    private static void writeRAGReport(RAGStatus status, String outputFile) throws IOException {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(outputFile))) {
+            bw.write("Component,Score,Status,Details\n");
+            bw.write(String.format("Schedule Health,%.2f,%s,%s\n", 
+                status.scheduleHealth, status.getScheduleRAG(), status.scheduleDetails));
+            bw.write(String.format("Defect Health,%.2f,%s,%s\n", 
+                status.defectHealth, status.getDefectRAG(), status.defectDetails));
+            bw.write(String.format("Overall Status,%.2f,%s,%s\n", 
+                status.overallHealth, status.getOverallRAG(), status.overallDetails));
+        }
+    }
+}
+
+class RAGCalculator {
+    private static final double CRITICAL_THRESHOLD = 0.8;
+    private static final double WARNING_THRESHOLD = 0.6;
+    
+    public RAGStatus calculateOverallRAG(ProjectData project, List<Defect> defects) {
+        RAGStatus status = new RAGStatus();
+        
+        // Calculate schedule health
+        double scheduleHealth = calculateScheduleHealth(project);
+        status.scheduleHealth = scheduleHealth;
+        status.scheduleDetails = generateScheduleDetails(project);
+        
+        // Calculate defect health
+        double defectHealth = calculateDefectHealth(defects);
+        status.defectHealth = defectHealth;
+        status.defectDetails = generateDefectDetails(defects);
+        
+        // Calculate overall health (equal weighting)
+        status.overallHealth = (scheduleHealth + defectHealth) / 2.0;
+        status.overallDetails = generateOverallDetails(status);
+        
+        return status;
+    }
+    
+    private double calculateScheduleHealth(ProjectData project) {
+        double health = 1.0;
+        LocalDate today = LocalDate.now();
+        
+        // Check if project is complete
+        if (today.isAfter(project.endDate)) {
+            return 0.0;
+        }
+        
+        // Calculate progress
+        long totalDays = ChronoUnit.DAYS.between(project.startDate, project.endDate);
+        long daysElapsed = ChronoUnit.DAYS.between(project.startDate, today);
+        double expectedProgress = (double) daysElapsed / totalDays;
+        
+        // Reduce health based on timeline
+        if (expectedProgress > 1.0) {
+            health -= 0.4; // Severely behind schedule
+        } else if (expectedProgress > 0.9) {
+            health -= 0.2; // Slightly behind schedule
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private double calculateDefectHealth(List<Defect> defects) {
+        double health = 1.0;
+        LocalDate today = LocalDate.now();
+        
+        // Count defects by severity and check ETAs
+        long criticalDefects = 0;
+        long highDefects = 0;
+        long delayedDefects = 0;
+        
+        for (Defect defect : defects) {
+            if (defect.severity == DefectSeverity.CRITICAL) {
+                criticalDefects++;
+                if (today.isAfter(defect.fixETA)) {
+                    delayedDefects++;
+                }
+            } else if (defect.severity == DefectSeverity.HIGH) {
+                highDefects++;
+                if (today.isAfter(defect.fixETA)) {
+                    delayedDefects++;
+                }
+            }
+        }
+        
+        // Calculate health reductions
+        if (criticalDefects > 0) {
+            health -= 0.3; // Base penalty for critical defects
+        }
+        
+        if (highDefects > 2) {
+            health -= 0.2; // Penalty for multiple high defects
+        }
+        
+        // Additional penalty for delayed fixes
+        if (delayedDefects > 0) {
+            health -= 0.1 * delayedDefects; // Penalty for each delayed defect
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private String generateScheduleDetails(ProjectData project) {
+        LocalDate today = LocalDate.now();
+        long totalDays = ChronoUnit.DAYS.between(project.startDate, project.endDate);
+        long daysElapsed = ChronoUnit.DAYS.between(project.startDate, today);
+        double progress = ((double) daysElapsed / totalDays) * 100;
+        
+        return String.format("Progress: %.1f%%, Days Elapsed: %d, Total Days: %d", 
+            progress, daysElapsed, totalDays);
+    }
+    
+    private String generateDefectDetails(List<Defect> defects) {
+        LocalDate today = LocalDate.now();
+        long criticalDefects = defects.stream()
+            .filter(d -> d.severity == DefectSeverity.CRITICAL)
+            .count();
+            
+        long highDefects = defects.stream()
+            .filter(d -> d.severity == DefectSeverity.HIGH)
+            .count();
+            
+        long delayedDefects = defects.stream()
+            .filter(d -> today.isAfter(d.fixETA))
+            .count();
+            
+        return String.format("Critical: %d, High: %d, Delayed: %d", 
+            criticalDefects, highDefects, delayedDefects);
+    }
+    
+    private String generateOverallDetails(RAGStatus status) {
+        return String.format("Schedule Health: %s, Defect Health: %s", 
+            status.getScheduleRAG(), status.getDefectRAG());
+    }
+}
+
+class ProjectData {
+    String projectId;
+    String projectName;
+    LocalDate startDate;
+    LocalDate endDate;
+    
+    public ProjectData(String projectId, String projectName, LocalDate startDate, LocalDate endDate) {
+        this.projectId = projectId;
+        this.projectName = projectName;
+        this.startDate = startDate;
+        this.endDate = endDate;
+    }
+}
+
+class Defect {
+    String defectId;
+    DefectSeverity severity;
+    LocalDate openDate;
+    LocalDate fixETA;
+    
+    public Defect(String defectId, DefectSeverity severity, LocalDate openDate, LocalDate fixETA) {
+        this.defectId = defectId;
+        this.severity = severity;
+        this.openDate = openDate;
+        this.fixETA = fixETA;
+    }
+}
+
+class RAGStatus {
+    double scheduleHealth;
+    double defectHealth;
+    double overallHealth;
+    String scheduleDetails;
+    String defectDetails;
+    String overallDetails;
+    
+    public String getScheduleRAG() {
+        return getRAGColor(scheduleHealth);
+    }
+    
+    public String getDefectRAG() {
+        return getRAGColor(defectHealth);
+    }
+    
+    public String getOverallRAG() {
+        return getRAGColor(overallHealth);
+    }
+    
+    private String getRAGColor(double health) {
+        if (health >= 0.8) return "GREEN";
+        if (health >= 0.6) return "AMBER";
+        return "RED";
+    }
+}
+
+enum DefectSeverity {
+    CRITICAL, HIGH, MEDIUM, LOW
+}
