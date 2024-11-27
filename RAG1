@@ -1,0 +1,295 @@
+import java.io.*;
+import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+// Main class to orchestrate RAG calculation
+public class ProjectRAGCalculator {
+    public static void main(String[] args) {
+        try {
+            String projectDataFile = "project_data.csv";
+            String phaseDataFile = "phase_data.csv";
+            String defectDataFile = "defect_data.csv";
+            
+            ProjectData projectData = readProjectData(projectDataFile);
+            List<PhaseData> phases = readPhaseData(phaseDataFile);
+            List<Defect> defects = readDefectData(defectDataFile);
+            
+            RAGCalculator calculator = new RAGCalculator();
+            RAGStatus status = calculator.calculateOverallRAG(projectData, phases, defects);
+            
+            writeRAGReport(status, "rag_report.csv");
+            
+        } catch (Exception e) {
+            System.err.println("Error in RAG calculation: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    // Helper methods for reading CSV files
+    private static ProjectData readProjectData(String filename) throws IOException {
+        // Implementation for reading project data
+        // For demonstration, returning dummy data
+        return new ProjectData(
+            LocalDate.now().minusMonths(1),
+            LocalDate.now().plusMonths(2),
+            "Performance Testing Project"
+        );
+    }
+
+    private static List<PhaseData> readPhaseData(String filename) throws IOException {
+        // Implementation for reading phase data
+        // For demonstration, returning dummy data
+        List<PhaseData> phases = new ArrayList<>();
+        // Add sample phases
+        return phases;
+    }
+
+    private static List<Defect> readDefectData(String filename) throws IOException {
+        // Implementation for reading defect data
+        // For demonstration, returning dummy data
+        List<Defect> defects = new ArrayList<>();
+        // Add sample defects
+        return defects;
+    }
+}
+
+// Class to perform RAG calculations
+class RAGCalculator {
+    private static final double CRITICAL_THRESHOLD = 0.8;
+    private static final double WARNING_THRESHOLD = 0.6;
+    
+    public RAGStatus calculateOverallRAG(ProjectData project, List<PhaseData> phases, List<Defect> defects) {
+        RAGStatus status = new RAGStatus();
+        
+        // Calculate schedule health
+        double scheduleHealth = calculateScheduleHealth(project, phases);
+        status.addComponent("Schedule Health", scheduleHealth);
+        
+        // Calculate phase health
+        double phaseHealth = calculatePhaseHealth(phases);
+        status.addComponent("Phase Health", phaseHealth);
+        
+        // Calculate defect health
+        double defectHealth = calculateDefectHealth(defects);
+        status.addComponent("Defect Health", defectHealth);
+        
+        // Calculate performance metrics health
+        double perfHealth = calculatePerformanceHealth(phases);
+        status.addComponent("Performance Health", perfHealth);
+        
+        // Calculate overall health
+        status.calculateOverallStatus();
+        
+        return status;
+    }
+    
+    private double calculateScheduleHealth(ProjectData project, List<PhaseData> phases) {
+        double health = 1.0;
+        LocalDate today = LocalDate.now();
+        
+        // Check overall project timeline
+        long totalDays = ChronoUnit.DAYS.between(project.startDate, project.endDate);
+        long daysElapsed = ChronoUnit.DAYS.between(project.startDate, today);
+        double projectProgress = (double) daysElapsed / totalDays;
+        
+        // Check phase timelines
+        int completedPhases = 0;
+        int delayedPhases = 0;
+        
+        for (PhaseData phase : phases) {
+            if (phase.isComplete()) {
+                completedPhases++;
+                if (phase.actualEndDate.isAfter(phase.plannedEndDate)) {
+                    delayedPhases++;
+                }
+            } else if (today.isAfter(phase.plannedEndDate)) {
+                delayedPhases++;
+            }
+        }
+        
+        // Reduce health based on delays and progress
+        health -= (0.2 * delayedPhases / phases.size());
+        
+        // Check if project is behind schedule
+        double expectedProgress = completedPhases / (double) phases.size();
+        if (projectProgress > expectedProgress + 0.1) {
+            health -= 0.3;
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private double calculateDefectHealth(List<Defect> defects) {
+        double health = 1.0;
+        
+        // Count defects by severity
+        long criticalDefects = defects.stream()
+            .filter(d -> d.severity == DefectSeverity.CRITICAL && !d.isResolved)
+            .count();
+            
+        long highDefects = defects.stream()
+            .filter(d -> d.severity == DefectSeverity.HIGH && !d.isResolved)
+            .count();
+            
+        long totalDefects = defects.stream()
+            .filter(d -> !d.isResolved)
+            .count();
+            
+        // Calculate health reductions
+        if (criticalDefects > 0) {
+            health -= 0.4; // Severe penalty for critical defects
+        }
+        
+        if (highDefects > 2) {
+            health -= 0.2; // Penalty for multiple high defects
+        }
+        
+        // Factor in defect resolution rate
+        long resolvedDefects = defects.stream()
+            .filter(d -> d.isResolved)
+            .count();
+            
+        double resolutionRate = resolvedDefects / (double) defects.size();
+        if (resolutionRate < 0.7) {
+            health -= (0.7 - resolutionRate);
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private double calculatePhaseHealth(List<PhaseData> phases) {
+        double health = 1.0;
+        
+        // Calculate health based on phase status and dependencies
+        for (PhaseData phase : phases) {
+            if (!phase.isComplete() && phase.hasBlockingIssues()) {
+                health -= 0.2;
+            }
+            
+            if (phase.isComplete() && phase.hasQualityIssues()) {
+                health -= 0.15;
+            }
+        }
+        
+        return Math.max(0, health);
+    }
+    
+    private double calculatePerformanceHealth(List<PhaseData> phases) {
+        double health = 1.0;
+        
+        // Find execution phase
+        Optional<PhaseData> executionPhase = phases.stream()
+            .filter(p -> p.name.equalsIgnoreCase("Execution"))
+            .findFirst();
+            
+        if (executionPhase.isPresent()) {
+            PhaseData execution = executionPhase.get();
+            
+            // Check performance metrics
+            if (execution.hasPerformanceIssues()) {
+                health -= 0.3;
+            }
+            
+            // Check test coverage
+            if (execution.getTestCoverage() < 0.8) {
+                health -= 0.2;
+            }
+        }
+        
+        return Math.max(0, health);
+    }
+}
+
+// Supporting classes
+class ProjectData {
+    LocalDate startDate;
+    LocalDate endDate;
+    String name;
+    
+    public ProjectData(LocalDate startDate, LocalDate endDate, String name) {
+        this.startDate = startDate;
+        this.endDate = endDate;
+        this.name = name;
+    }
+}
+
+class PhaseData {
+    String name;
+    LocalDate plannedStartDate;
+    LocalDate plannedEndDate;
+    LocalDate actualStartDate;
+    LocalDate actualEndDate;
+    PhaseStatus status;
+    List<String> blockingIssues;
+    List<String> qualityIssues;
+    Map<String, Double> performanceMetrics;
+    
+    public boolean isComplete() {
+        return status == PhaseStatus.COMPLETED;
+    }
+    
+    public boolean hasBlockingIssues() {
+        return blockingIssues != null && !blockingIssues.isEmpty();
+    }
+    
+    public boolean hasQualityIssues() {
+        return qualityIssues != null && !qualityIssues.isEmpty();
+    }
+    
+    public boolean hasPerformanceIssues() {
+        if (performanceMetrics == null) return false;
+        // Check if any performance metric is below threshold
+        return performanceMetrics.values().stream()
+            .anyMatch(metric -> metric < 0.8);
+    }
+    
+    public double getTestCoverage() {
+        return performanceMetrics.getOrDefault("testCoverage", 0.0);
+    }
+}
+
+class Defect {
+    String id;
+    DefectSeverity severity;
+    boolean isResolved;
+    LocalDate reportedDate;
+    LocalDate resolvedDate;
+    String description;
+}
+
+class RAGStatus {
+    Map<String, Double> componentScores = new HashMap<>();
+    RAGColor overallStatus;
+    
+    public void addComponent(String component, double score) {
+        componentScores.put(component, score);
+    }
+    
+    public void calculateOverallStatus() {
+        double averageScore = componentScores.values().stream()
+            .mapToDouble(Double::doubleValue)
+            .average()
+            .orElse(0.0);
+            
+        if (averageScore >= 0.8) {
+            overallStatus = RAGColor.GREEN;
+        } else if (averageScore >= 0.6) {
+            overallStatus = RAGColor.AMBER;
+        } else {
+            overallStatus = RAGColor.RED;
+        }
+    }
+}
+
+enum RAGColor {
+    RED, AMBER, GREEN
+}
+
+enum PhaseStatus {
+    NOT_STARTED, IN_PROGRESS, COMPLETED, BLOCKED
+}
+
+enum DefectSeverity {
+    CRITICAL, HIGH, MEDIUM, LOW
+}
