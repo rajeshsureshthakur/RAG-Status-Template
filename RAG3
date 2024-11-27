@@ -1,0 +1,81 @@
+import java.io.*;
+import java.time.*;
+import java.time.format.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+public class ProjectRAGCalculator {
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+    
+    public static void main(String[] args) {
+        try {
+            String projectDataFile = "project_data.csv";
+            String defectDataFile = "defect_data.csv";
+            
+            ProjectData projectData = readProjectData(projectDataFile);
+            List<Defect> defects = readDefectData(defectDataFile);
+            
+            RAGCalculator calculator = new RAGCalculator();
+            RAGStatus status = calculator.calculateOverallRAG(projectData, defects);
+            
+            writeRAGReport(status, "rag_report.csv");
+            
+        } catch (Exception e) {
+            System.err.println("Error in RAG calculation: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static ProjectData readProjectData(String filename) throws IOException {
+        ProjectData projectData = null;
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            // Skip header
+            br.readLine();
+            
+            String line = br.readLine();
+            if (line != null) {
+                String[] values = line.split(",");
+                projectData = new ProjectData(
+                    values[0],                                    // project_id
+                    values[1],                                    // project_name
+                    LocalDate.parse(values[2].trim(), DATE_FORMAT),   // start_date
+                    LocalDate.parse(values[3].trim(), DATE_FORMAT)    // end_date
+                );
+            }
+        }
+        return projectData;
+    }
+
+    private static List<Defect> readDefectData(String filename) throws IOException {
+        List<Defect> defects = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            // Skip header
+            br.readLine();
+            
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                Defect defect = new Defect(
+                    values[0],                                    // defect_id
+                    DefectSeverity.valueOf(values[1].toUpperCase()),  // severity
+                    LocalDate.parse(values[2].trim(), DATE_FORMAT),   // open_date
+                    LocalDate.parse(values[3].trim(), DATE_FORMAT)    // fix_eta
+                );
+                defects.add(defect);
+            }
+        }
+        return defects;
+    }
+
+    private static void writeRAGReport(RAGStatus status, String outputFile) throws IOException {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(outputFile))) {
+            bw.write("Component,Score,Status,Details\n");
+            bw.write(String.format("Schedule Health,%.2f,%s,%s\n", 
+                status.scheduleHealth, status.getScheduleRAG(), status.scheduleDetails));
+            bw.write(String.format("Defect Health,%.2f,%s,%s\n", 
+                status.defectHealth, status.getDefectRAG(), status.defectDetails));
+            bw.write(String.format("Overall Status,%.2f,%s,%s\n", 
+                status.overallHealth, status.getOverallRAG(), status.overallDetails));
+        }
+    }
+}
